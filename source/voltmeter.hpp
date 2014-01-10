@@ -10,13 +10,13 @@ class VoltMeter
 {
 public:
 	VoltMeter(int channels, int threshold, double min, double max,
-		  int nsteps);
+		  int nsteps, bool enable_graphics);
 	~VoltMeter();
 
 	void set(double tbl[]);
 
 private:
-	void draw(double v, double m);
+	void draw(int channel, double v, double m);
 	int bin(double v);
 	int channels_;
 	double min_;
@@ -26,5 +26,6 @@ private:
 	double * max_values_;
 	int * max_value_counter_;
 	char * marker_;
+	bool enable_graphics_;
 };
 #endif

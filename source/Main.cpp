@@ -2,7 +2,6 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
-#include <unistd.h>
 #include <cstdlib>
 #include <cassert>
 #include <sstream>
@@ -12,7 +11,11 @@
 #include <memory>
 #include <iostream>
 #include <SaleaeDeviceApi.h>
-
+#if defined(WIN32)
+ #include <windows.h>
+#else
+ #include <unistd.h>
+#endif
 #include "voltmeter.hpp"
 #include "wavfile.hpp"
 
@@ -30,6 +33,13 @@ void __stdcall OnError( U64 device_id, void* user_data );
 #define CHANNELS 4
 #define WAIT_SETUP_SEC 1
 #define WAIT_TEARDOWN_SEC 1
+#if defined(WIN32)
+ #define USLEEP(t) Sleep((DWORD) ((t)/1e3))
+ #define ENABLE_GRAPHICS 0
+#else
+ #define USLEEP(t) usleep((t))
+ #define ENABLE_GRAPHICS 1
+#endif
 
 #if 0
 #define DBG(...) fprintf (stderr, __VA_ARGS__)
@@ -38,12 +48,11 @@ void __stdcall OnError( U64 device_id, void* user_data );
 #endif
 
 #define NUM_ELEMENTS(array) (sizeof(array)/sizeof(array[0]))
-
-FILE * fdbg = NULL;
-WavFile * wav = NULL;
-volatile bool loop = true;
 LogicInterface* gDeviceInterface = NULL;
 U64 gLogicId = 0;
+volatile bool loop = true;
+FILE * fdbg = NULL;
+WavFile * wav = NULL;
 
 enum protocol_state {
 	IDLE,
@@ -95,8 +104,12 @@ void handle_data_bit(int state_index, U8 data)
 		channel[current_channel] <<= 1;
 		channel[current_channel+CHANNELS] <<= 1;
 
-		if (data & 0b00000100) channel[current_channel] |= 1;
-		if (data & 0b00001000) channel[current_channel+CHANNELS] |= 1;
+		/* if (data & 0b00000100) */
+		if (data & (0x01<<2))
+			channel[current_channel] |= 1;
+		/* if (data & 0b00001000) */
+		if (data & (0x01<<3))
+			channel[current_channel+CHANNELS] |= 1;
 
 		current_bit++;
 		if (current_bit == BITS) {
@@ -108,15 +121,13 @@ void handle_data_bit(int state_index, U8 data)
 
 struct protocol_transition state_machine[] = {
 	//current_state,    mask,      match,  new state
-	{IDLE, 0b00000001, 0b00000001, FRAME_START, NULL},
-	{FRAME_START,0b00000010, 0b00000010, FRAME_FIRST_BIT, NULL},
-	{FRAME_FIRST_BIT, 0b00000010, 0b00000000, FRAME_START,
-	 handle_data_bit},
-	{FRAME_START, 0b00000001, 0b00000000, FRAME_ACTIVE, NULL},
-	{FRAME_ACTIVE, 0b00000010, 0b00000010, DATA_BIT_ACTIVE, NULL},
-	{DATA_BIT_ACTIVE, 0b00000010, 0b00000000, FRAME_ACTIVE,
-	 handle_data_bit},
-	{FRAME_ACTIVE, 0b00000001, 0b00000001, FRAME_START, handle_frame_end},
+	{IDLE, 0x01, 0x01, FRAME_START, NULL},
+	{FRAME_START, 0x02, 0x02, FRAME_FIRST_BIT, NULL},
+	{FRAME_FIRST_BIT, 0x02, 0x00, FRAME_START, handle_data_bit},
+	{FRAME_START, 0x01, 0x00, FRAME_ACTIVE, NULL},
+	{FRAME_ACTIVE, 0x02, 0x02, DATA_BIT_ACTIVE, NULL},
+	{DATA_BIT_ACTIVE, 0x02, 0x00, FRAME_ACTIVE, handle_data_bit},
+	{FRAME_ACTIVE, 0x01, 0x01, FRAME_START, handle_frame_end},
 };
 
 void transition(U8 data)
@@ -148,6 +159,7 @@ int main( int argc, char *argv[])
 	int readtime_sec = -1;
 	bool verbose = false;
 	assert(sizeof(int) == 4);
+
 
 	for (int i = 1;i<argc;i++){
 		std::string arg(argv[i]);
@@ -195,11 +207,11 @@ int main( int argc, char *argv[])
 				readtime_sec;
 			continue;
 		}
-
 		wav = new WavFile(arg, "w");
 		wav->sampleRate(48000);
 		wav->channelCount(2*CHANNELS);
 		wav->bitsPerSample(BITS);
+
 	}
 
 	DevicesManagerInterface::RegisterOnConnect( &OnConnect,
@@ -207,7 +219,7 @@ int main( int argc, char *argv[])
 	DevicesManagerInterface::RegisterOnDisconnect( &OnDisconnect );
 	DevicesManagerInterface::BeginConnect();
 
-	sleep(WAIT_SETUP_SEC);
+	USLEEP(WAIT_SETUP_SEC*1e6);
 	if (gDeviceInterface == NULL){
 		std::cerr << "Sorry, no devices are connected." << std::endl;
 		return 1;
@@ -218,7 +230,7 @@ int main( int argc, char *argv[])
 		std::cerr << "Reading data for " << readtime_sec <<
 			" seconds." << std::endl;
 
-	VoltMeter vm(2*CHANNELS, 10, -130, 0, 20);
+	VoltMeter vm(2*CHANNELS, 10, -130, 0, 20, ENABLE_GRAPHICS);
 	double db[2*CHANNELS];
 
 	std::cerr << "Press CTRL-C to quit" << std::endl;
@@ -229,13 +241,16 @@ int main( int argc, char *argv[])
 	}
 
 	while(loop){
-		usleep(0.19 * 1e6);
+		USLEEP(0.19 * 1e6);
 		if(verbose && wav){
-			printf("\033[%dA", wav->channelCount());
+			if (ENABLE_GRAPHICS)
+				printf("\033[%dA", wav->channelCount());
+			else
+				printf("\r");
 			wav->level_db(db);
 			vm.set(db);
 		}
-		fprintf(stderr, "%10.2f s.\r", (double) ndata/48000);
+		fprintf(stderr, " %10.2f s.\r", (double) ndata/48000);
 		if(readtime_sec > 0 && (double)ndata/48000 > readtime_sec){
 			loop = false;
 		}
@@ -245,7 +260,7 @@ int main( int argc, char *argv[])
 		gDeviceInterface->Stop();
 
 	std::cerr << std::endl << ndata << " samples read." << std::endl;
-	sleep(WAIT_TEARDOWN_SEC);
+	USLEEP(WAIT_TEARDOWN_SEC*1e6);
 
 	if(fdbg)
 		fclose(fdbg);
@@ -292,7 +307,7 @@ void __stdcall OnReadData( U64 device_id, U8* data, U32 data_length,
 	if(fdbg)
 		fwrite(data, sizeof(U8), data_length, fdbg);
 
-	for (int i = 0; i < data_length; i++) {
+	for (unsigned i = 0; i < data_length; i++) {
 		transition(data[i]);
 	}
 

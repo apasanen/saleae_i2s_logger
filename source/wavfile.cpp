@@ -6,19 +6,16 @@
 #include <cassert>
 #include "wavfile.hpp"
 
-#define ABSMAX(x,pos) ((fabs(x)>(pos))?fabs(x):(pos))
+#define ABSMAX(x,pos) ((fabs((float)(x))>(pos))?fabs((float)(x)):(pos))
 
 void textCompare(const char ** p, const char * str)
 {
 	size_t s = strlen(str);
 	int ret = strncmp(p[0], str, s);
 	if(ret != 0){
-		char tmp[s+1];
-		tmp[s] = '\0';
 		//throw (string) "Error: " + str + " not found in wav header.";
 		fprintf(stderr,
-			"Error: %s not found in wav header (%s).\n", str,
-			strncpy(tmp, p[0], s));
+			"Error: %s not found in wav header.\n", str);
 		exit(1);
 	}
 	*p += s;
