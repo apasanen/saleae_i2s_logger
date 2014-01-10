@@ -256,7 +256,7 @@ void update_levels(float * mLevels,
 	int i;
 
 	if(BitsPerSample == 8){
-		assert(sizeof(char) == BitsPerSample);
+		assert(sizeof(char)*8 == BitsPerSample);
 		const char * tbl = (const char *) buffer;
 		for (i=0;i<nFrames;i++){
 			for (int j=0;j<NumChannels;j++){
@@ -265,7 +265,7 @@ void update_levels(float * mLevels,
 			}
 		}
 	} else if(BitsPerSample == 16) {
-		assert(sizeof(short) == BitsPerSample);
+		assert(sizeof(short)*8 == BitsPerSample);
 		const short * tbl = (const short *) buffer;
 		for (i=0;i<nFrames;i++) {
 			for (int j=0;j<NumChannels;j++)
@@ -290,7 +290,7 @@ void update_levels(float * mLevels,
 			}
 		}
 	} else if(BitsPerSample == 32) {
-		assert(sizeof(int) == BitsPerSample);
+		assert(sizeof(int)*8 == BitsPerSample);
 		const int * tbl = (const int *) buffer;
 		for (i=0;i<nFrames;i++) {
 			for (int j=0;j<NumChannels;j++) {
@@ -417,8 +417,7 @@ float WavFile::level_db(int ch)
 			mLevels[i] = 0;
 		}
 	}
-
-	long unsigned v = ((long unsigned)0x1<<(mHeader.BitsPerSample-1));
+	long unsigned v = (0x1U << (mHeader.BitsPerSample-1));
 	float value_db = 20*log10(mLevels[ch] / v);
 	mLevels[ch] = 0;
 	return value_db;
