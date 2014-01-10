@@ -30,9 +30,12 @@ void __stdcall OnError( U64 device_id, void* user_data );
 
 //#define NDEBUG
 #define BITS 24
+#define BYTES ((BITS)/8)
 #define CHANNELS 4
+#define WIRES 2
 #define WAIT_SETUP_SEC 1
 #define WAIT_TEARDOWN_SEC 1
+#define AUDIO_SAMPLING_RATE (48000)
 #if defined(WIN32)
  #define USLEEP(t) Sleep((DWORD) ((t)/1e3))
  #define ENABLE_GRAPHICS 0
@@ -40,7 +43,8 @@ void __stdcall OnError( U64 device_id, void* user_data );
  #define USLEEP(t) usleep((t))
  #define ENABLE_GRAPHICS 1
 #endif
-
+/* Disable to write raw data for debug purposes */
+#define USE_WAV 1
 #if 0
 #define DBG(...) fprintf (stderr, __VA_ARGS__)
 #else
@@ -52,7 +56,11 @@ LogicInterface* gDeviceInterface = NULL;
 U64 gLogicId = 0;
 volatile bool loop = true;
 FILE * fdbg = NULL;
+#if USE_WAV
 WavFile * wav = NULL;
+#else
+FILE * wav = NULL;
+#endif
 
 enum protocol_state {
 	IDLE,
@@ -71,7 +79,7 @@ struct protocol_transition {
 };
 
 protocol_state current_state = IDLE;
-int channel[2*CHANNELS] = { 0 };
+int channel[WIRES*CHANNELS] = { 0 };
 int current_channel;
 int current_bit;
 int ascii = 0;
@@ -81,15 +89,24 @@ volatile unsigned long ndata = 0;
 void handle_frame_end(int state_index, U8 data)
 {
 	DBG("%s\n", __func__);
-	int channel_count = 2*CHANNELS;
-	char arr[2*CHANNELS * (BITS/8)];
+	int channel_count = WIRES * CHANNELS;
+	char arr[WIRES * CHANNELS * BYTES];
 	for (int i = 0; i < channel_count; i++) {
-		arr[i*(BITS/8)+0] = (channel[i] & 0x0000ff) >> 0;
-		arr[i*(BITS/8)+1] = (channel[i] & 0x00ff00) >> 8;
-		arr[i*(BITS/8)+2] = (channel[i] & 0xff0000) >> 16;
+		arr[i*BYTES+0] = (channel[i] & 0x0000ff) >> 0;
+		arr[i*BYTES+1] = (channel[i] & 0x00ff00) >> 8;
+		arr[i*BYTES+2] = (channel[i] & 0xff0000) >> 16;
 	}
 
-	if(wav) wav->write(arr, 1);
+	if(wav) {
+#if USE_WAV
+		if(wav->write(arr, 1) != 1){
+			fprintf(stderr, "Error in writing wav file.\n");
+			exit(1);
+		}
+#else
+		fwrite(arr, sizeof(arr), 1, wav);
+#endif
+	}
 	ndata++;
 
 	current_channel = 0;
@@ -164,18 +181,27 @@ int main( int argc, char *argv[])
 	for (int i = 1;i<argc;i++){
 		std::string arg(argv[i]);
 		if(arg == "-h"){
-			std::cout << "usage:" << argv[0]
-				  << " [-v] " << "[-r rate] "
+			std::cout << "usage: " << argv[0]
+				  << " [-v] " 
+				  << "[-r rate] "
 				  << "[-t time] "
-				  << "[-d raw_data.bin] file.wav "
+				  << "[-d raw_data.bin] " 
+				  << "[file.wav] "
 				  << std::endl;
-			std::cout << std::endl << "Logic wiring:" << std::endl;
+			printf("Options:\n");
+			printf(" %-20s%s\n", "-v", "Verbose mode");
+			printf(" %-20s%s (%ld hz).\n", "-r", "Logic sampling rate", gSampleRateHz);
+			printf(" %-20s%s\n", "-t", "Recogding time in seconds");
+			printf(" %-20s%s\n", "-d", "Crate raw data file");
+			printf(" %-20s%s\n", "-h", "Usage instructions");
+			printf(" %-20s%s\n", "file.wav", "Create wav file");
+			std::cout << std::endl << std::endl << "Logic wiring:" << std::endl;
 			std::cout << " 1 - Frame Sync" << std::endl;
 			std::cout << " 2 - Bit Clock" << std::endl;
 			std::cout << " 3 - Data 1" << std::endl;
 			std::cout << " 4 - Data 2" << std::endl;
-			std::cout << "TDM DSP Mode B, "
-				  << " bit clock inverted"  << std::endl;
+			std::cout << "Note! TDM DSP Mode B, "
+				  << " (bit clock inverted)"  << std::endl;
 			DevicesManagerInterface::BeginConnect(); // Bug in SDK
 			exit(0);
 		}
@@ -207,11 +233,15 @@ int main( int argc, char *argv[])
 				readtime_sec;
 			continue;
 		}
-		wav = new WavFile(arg, "w");
-		wav->sampleRate(48000);
-		wav->channelCount(2*CHANNELS);
+#if USE_WAV
+		wav = new WavFile(arg, "wb");
+		wav->sampleRate(AUDIO_SAMPLING_RATE);
+		wav->channelCount(WIRES * CHANNELS);
 		wav->bitsPerSample(BITS);
-
+#else
+		wav = fopen(arg.c_str(), "wb");
+#endif
+		assert(wav);
 	}
 
 	DevicesManagerInterface::RegisterOnConnect( &OnConnect,
@@ -230,18 +260,20 @@ int main( int argc, char *argv[])
 		std::cerr << "Reading data for " << readtime_sec <<
 			" seconds." << std::endl;
 
-	VoltMeter vm(2*CHANNELS, 10, -130, 0, 20, ENABLE_GRAPHICS);
-	double db[2*CHANNELS];
-
+	VoltMeter vm(WIRES * CHANNELS, 10, -130, 0, 20, ENABLE_GRAPHICS);
 	std::cerr << "Press CTRL-C to quit" << std::endl;
 
+#if USE_WAV
+	double db[2*CHANNELS];
 	if(wav && verbose) {
 		wav->level_db(db);
 		vm.set(db);
 	}
+#endif
 
 	while(loop){
 		USLEEP(0.19 * 1e6);
+#if USE_WAV
 		if(verbose && wav){
 			if (ENABLE_GRAPHICS)
 				printf("\033[%dA", wav->channelCount());
@@ -250,8 +282,9 @@ int main( int argc, char *argv[])
 			wav->level_db(db);
 			vm.set(db);
 		}
-		fprintf(stderr, " %10.2f s.\r", (double) ndata/48000);
-		if(readtime_sec > 0 && (double)ndata/48000 > readtime_sec){
+#endif
+		fprintf(stderr, " %10.2f s.\r", (double) ndata/AUDIO_SAMPLING_RATE);
+		if(readtime_sec > 0 && (double)ndata/AUDIO_SAMPLING_RATE > readtime_sec){
 			loop = false;
 		}
 	}
@@ -265,8 +298,14 @@ int main( int argc, char *argv[])
 	if(fdbg)
 		fclose(fdbg);
 
-	if(wav)
+	if(wav) {
+#if USE_WAV
 		delete wav;
+#else
+		fclose(wav);
+#endif
+		wav = NULL;
+	}
 
 	return 0;
 }
